@@ -13,12 +13,19 @@ from datetime import datetime
 import functools, builtins  # Added for auto-flushing prints
 print = functools.partial(builtins.print, flush=True)  # Auto-flush all prints
 MAX_TRAIN_TOKENS = 1024  # Limit sequence length during training to avoid OOM
+GROUP_SIZE_GRPO = 4  # Number of c1 completions per problem for baseline GRPO
+GROUP_SIZE_SRRL = GROUP_SIZE_GRPO // 2  # SRRL samples half as many c1, but unlimited c2
 from loss import GRPOLoss, approx_kl_divergence
 
 def clear_memory():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-        torch.cuda.synchronize()
+        # `torch.cuda.synchronize()` can hang if the device is in an error state.
+        if os.getenv("CUDA_SYNC", "0") == "1":
+            try:
+                torch.cuda.synchronize()
+            except RuntimeError as e:
+                print(f"⚠️ cuda.synchronize skipped due to error: {e}")
 
 def cleanup_model(model):
     """Properly cleanup model to prevent CUDA corruption."""
@@ -195,10 +202,16 @@ def stable_train_sample_wise(model, optimizer, tokenizer, sequences, rewards, de
         avg_log_prob = (log_probs * attn_shifted).sum() / attn_shifted.sum().clamp(min=1)
         loss = -(avg_log_prob * adv)
         loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        if math.isfinite(grad_norm):
-            optimizer.step()
-            optimizer.zero_grad()
+        
+        if (seq_idx + 1) % 1 == 0 or seq_idx == len(sequences) - 1:
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            if math.isfinite(grad_norm):
+                optimizer.step()
+                optimizer.zero_grad()
+                with torch.no_grad():
+                    for p in model.parameters():
+                        if torch.isnan(p).any() or torch.isinf(p).any():
+                            raise RuntimeError("Detected NaN/Inf in model parameters after update")
     print(f"      ✅ {label} sample-wise update done ({len(sequences)} sequences)")
     clear_memory()
 # ===============================================
@@ -216,11 +229,8 @@ def train_grpo(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
             
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Ensure GPU usage
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.float16,
-        ).to(device)  # Move model to the chosen device
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", device_map="auto")
         optimizer = torch.optim.AdamW(model.parameters(), lr=5e-8, weight_decay=0.01)
         
         print(f"Training on {len(train_problems)} problems")
@@ -231,7 +241,8 @@ def train_grpo(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
             total_rewards = []
             total_sequences = []
             
-            for problem in train_problems:
+            for idx, problem in enumerate(train_problems):
+                print(f"\n  ⚙️ GRPO Problem {idx+1}/{len(train_problems)}: {problem['task_id']}")
                 prompt = create_code_prompt(problem)
                 
                 inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=400)
@@ -244,11 +255,11 @@ def train_grpo(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
                         outputs = model.generate(
                             input_ids,
                             attention_mask=attention_mask,
-                            max_new_tokens=2000,  # Full 2k tokens for complex code
+                            max_new_tokens=512,  # reduce to 512 to avoid instability
                             do_sample=True,
                             temperature=0.7,
                             top_p=0.9,
-                            num_return_sequences=2,
+                            num_return_sequences=GROUP_SIZE_GRPO,
                             pad_token_id=tokenizer.pad_token_id,
                             use_cache=True
                         )
@@ -329,10 +340,7 @@ def train_srrl(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
             tokenizer.pad_token = tokenizer.eos_token
             
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.float16,
-        ).to(device)
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", device_map="auto")
         optimizer = torch.optim.AdamW(model.parameters(), lr=5e-8, weight_decay=0.01)
         
         print(f"Training on {len(train_problems)} problems")
@@ -344,7 +352,8 @@ def train_srrl(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
             all_sequences = []
             refinement_count = 0
             
-            for problem in train_problems:
+            for idx, problem in enumerate(train_problems):
+                print(f"\n  ⚙️ SRRL Problem {idx+1}/{len(train_problems)}: {problem['task_id']}")
                 prompt = create_code_prompt(problem)
                 
                 inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=400)
@@ -359,11 +368,11 @@ def train_srrl(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
                         outputs = model.generate(
                             input_ids,
                             attention_mask=attention_mask,
-                            max_new_tokens=2000,
+                            max_new_tokens=512,
                             do_sample=True,
                             temperature=0.7,
                             top_p=0.9,
-                            num_return_sequences=2,
+                            num_return_sequences=GROUP_SIZE_SRRL,
                             pad_token_id=tokenizer.pad_token_id,
                             use_cache=True
                         )
@@ -395,7 +404,7 @@ def train_srrl(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
                 if failed_attempts:
                     print(f"  SRRL: Refining {len(failed_attempts)} failures...")
                     
-                    for attempt in failed_attempts[:1]:
+                    for attempt in failed_attempts:
                         refined_prompt = create_refinement_prompt(problem["prompt"], attempt["code"], attempt["execution_result"])
                         
                         ref_inputs = tokenizer(refined_prompt, return_tensors="pt", truncation=True, max_length=600)
@@ -509,7 +518,7 @@ def evaluate_model(model_path, method_name, test_problems):
                     outputs = model.generate(
                         input_ids,
                         attention_mask=attention_mask,
-                        max_new_tokens=1024,  # shorter generation to avoid overflow
+                        max_new_tokens=512,
                         do_sample=True,
                         temperature=0.7,
                         top_p=0.9,

@@ -1,111 +1,96 @@
 {
   "experiment_info": {
-    "date": "2025-08-03T03:25:06.793041",
+    "date": "2025-08-03T05:57:01.608674",
     "model": "Qwen/Qwen2.5-3B-Instruct",
     "dataset": "MBPP",
     "training_problems": 3,
-    "test_problems": 3
+    "test_problems": 3,
+    "improvements": "Numerical stability + proper prompts"
   },
   "grpo": {
     "method": "GRPO",
-    "accuracy": 0.0,
-    "avg_reward": 0.0,
-    "correct_problems": 0,
+    "accuracy": 0.6666666666666666,
+    "avg_reward": 0.6666666666666666,
+    "correct_problems": 2,
     "total_problems": 3,
     "detailed_results": [
       {
         "task_id": 614,
-        "generated_code": "[(1, 2), (3, 4), (5, 6)]",
+        "generated_code": "def cummulative_sum(tuples_list):\n    # working code\n    cumulative_sum = 0\n    for tup in tuples_list:\n        for value in tup:\n            cumulative_sum += value\n    return cumulative_sum\n\n# Test the function\nassert cummulative_sum([(1, 3), (5, 6, 7), (2, 6)]) == 30",
+        "execution_success": true,
+        "reward": 1.0,
+        "success": true,
+        "error": "",
+        "failed_tests": []
+      },
+      {
+        "task_id": 615,
+        "generated_code": "def average_tuple(tuples_of_integers):\n    def tuple_average(inner_tuple):\n        return sum(inner_tuple) / len(inner_tuple)\n\n    averages = []\n    for tup in tuples_of_integers:\n        averages.append(tuple_average(tup))\n\n    return averages",
         "execution_success": false,
         "reward": 0.0,
         "success": false,
         "error": "",
         "failed_tests": [
-          "assert cummulative_sum([(1, 3), (5, 6, 7), (2, 6)]) == 30: name 'cummulative_sum' is not defined",
-          "assert cummulative_sum([(2, 4), (6, 7, 8), (3, 7)]) == 37: name 'cummulative_sum' is not defined",
-          "assert cummulative_sum([(3, 5), (7, 8, 9), (4, 8)]) == 44: name 'cummulative_sum' is not defined"
-        ]
-      },
-      {
-        "task_id": 615,
-        "generated_code": "The input tuple will contain at least two sub-tuples, each with integer values. Each sub-tuple can have different lengths.\n\nExample:\nInput: ((1, 2, 3), (4, 5, 6, 7), (8, 9))\nOutput: [2.0, 5.5, 8.5]\n\nYou should handle cases where the",
-        "execution_success": false,
-        "reward": 0.0,
-        "success": false,
-        "error": "invalid syntax (<string>, line 1)",
-        "failed_tests": [
-          "assert average_tuple(((10, 10, 10, 12), (30, 45, 56, 45), (81, 80, 39, 32), (1, 2, 3, 4)))==[30.5, 34.25, 27.0, 23.25]",
-          "assert average_tuple(((1, 1, -5), (30, -15, 56), (81, -60, -39), (-10, 2, 3)))== [25.5, -18.0, 3.75]",
-          "assert average_tuple( ((100, 100, 100, 120), (300, 450, 560, 450), (810, 800, 390, 320), (10, 20, 30, 40)))==[305.0, 342.5, 270.0, 232.5]"
+          "assert average_tuple(((10, 10, 10, 12), (30, 45, 56, 45), (81, 80, 39, 32), (1, 2, 3, 4)))==[30.5, 34.25, 27.0, 23.25]: ",
+          "assert average_tuple(((1, 1, -5), (30, -15, 56), (81, -60, -39), (-10, 2, 3)))== [25.5, -18.0, 3.75]: ",
+          "assert average_tuple( ((100, 100, 100, 120), (300, 450, 560, 450), (810, 800, 390, 320), (10, 20, 30, 40)))==[305.0, 342.5, 270.0, 232.5]: "
         ]
       },
       {
         "task_id": 616,
-        "generated_code": "The result should be returned as a list.\n\nThe function should also handle cases where the tuples contain negative numbers and ensure that the result is always a non-negative integer.\n\nExample:\n\nInput:\ntuple1 = (5, 9, -3)\ntuple2 = (4, 7, 8)\n\nOutput:\n[1, 1, 1]\n\nNote: In this example, the modulo",
-        "execution_success": false,
-        "reward": 0.0,
-        "success": false,
-        "error": "invalid syntax (<string>, line 1)",
-        "failed_tests": [
-          "assert tuple_modulo((10, 4, 5, 6), (5, 6, 7, 5)) == (0, 4, 5, 1)",
-          "assert tuple_modulo((11, 5, 6, 7), (6, 7, 8, 6)) == (5, 5, 6, 1)",
-          "assert tuple_modulo((12, 6, 7, 8), (7, 8, 9, 7)) == (5, 6, 7, 1)"
-        ]
+        "generated_code": "def tuple_modulo(tuple1, tuple2):\n    # Iterate over the elements of both tuples simultaneously\n    result = []\n    for num1, num2 in zip(tuple1, tuple2):\n        # Perform the modulo operation and append the result to the result list\n        result.append(num1 % num2)\n    \n    # Convert the result list back to a tuple and return it\n    return tuple(result)",
+        "execution_success": true,
+        "reward": 1.0,
+        "success": true,
+        "error": "",
+        "failed_tests": []
       }
     ]
   },
   "srrl": {
     "method": "SRRL",
-    "accuracy": 0.0,
-    "avg_reward": 0.0,
-    "correct_problems": 0,
+    "accuracy": 0.6666666666666666,
+    "avg_reward": 0.6666666666666666,
+    "correct_problems": 2,
     "total_problems": 3,
     "detailed_results": [
       {
         "task_id": 614,
-        "generated_code": "my_list = [(1, 2), (3, 4), ((5, 6), (7, 8)), (((9, 10), (11, 12)),)]",
+        "generated_code": "def cummulative_sum(tuples_list):\n    cumulative_total = 0\n    for tup in tuples_list:\n        current_sum = sum(tup)\n        cumulative_total += current_sum\n    return cumulative_total",
+        "execution_success": true,
+        "reward": 1.0,
+        "success": true,
+        "error": "",
+        "failed_tests": []
+      },
+      {
+        "task_id": 615,
+        "generated_code": "def average_tuple(tuples):\n    # Calculate the average for each tuple\n    averages = [sum(tup) / len(tup) for tup in tuples]\n    return averages",
         "execution_success": false,
         "reward": 0.0,
         "success": false,
         "error": "",
         "failed_tests": [
-          "assert cummulative_sum([(1, 3), (5, 6, 7), (2, 6)]) == 30: name 'cummulative_sum' is not defined",
-          "assert cummulative_sum([(2, 4), (6, 7, 8), (3, 7)]) == 37: name 'cummulative_sum' is not defined",
-          "assert cummulative_sum([(3, 5), (7, 8, 9), (4, 8)]) == 44: name 'cummulative_sum' is not defined"
-        ]
-      },
-      {
-        "task_id": 615,
-        "generated_code": "Each inner tuple represents a data point with three values. The function should handle cases where the inner tuples do not have exactly three elements by skipping those tuples and continuing to the next one. \n\nExample input: `data_points = ((1, 2, 3), (4, 5, 6), (7,), (8, 9, 10, 11))",
-        "execution_success": false,
-        "reward": 0.0,
-        "success": false,
-        "error": "invalid syntax (<string>, line 1)",
-        "failed_tests": [
-          "assert average_tuple(((10, 10, 10, 12), (30, 45, 56, 45), (81, 80, 39, 32), (1, 2, 3, 4)))==[30.5, 34.25, 27.0, 23.25]",
-          "assert average_tuple(((1, 1, -5), (30, -15, 56), (81, -60, -39), (-10, 2, 3)))== [25.5, -18.0, 3.75]",
-          "assert average_tuple( ((100, 100, 100, 120), (300, 450, 560, 450), (810, 800, 390, 320), (10, 20, 30, 40)))==[305.0, 342.5, 270.0, 232.5]"
+          "assert average_tuple(((10, 10, 10, 12), (30, 45, 56, 45), (81, 80, 39, 32), (1, 2, 3, 4)))==[30.5, 34.25, 27.0, 23.25]: ",
+          "assert average_tuple(((1, 1, -5), (30, -15, 56), (81, -60, -39), (-10, 2, 3)))== [25.5, -18.0, 3.75]: ",
+          "assert average_tuple( ((100, 100, 100, 120), (300, 450, 560, 450), (810, 800, 390, 320), (10, 20, 30, 40)))==[305.0, 342.5, 270.0, 232.5]: "
         ]
       },
       {
         "task_id": 616,
-        "generated_code": "tuple1 = (10, 20, 30)\ntuple2 = (4, 5, 6)\n\n# Expected Output:\n# [2, 0, 4]",
-        "execution_success": false,
-        "reward": 0.0,
-        "success": false,
+        "generated_code": "def tuple_modulo(tup1, tup2):\n    # Initialize an empty list to store the results\n    result = []\n    \n    # Iterate over the indices of the tuples\n    for i in range(len(tup1)):\n        # Perform the modulo operation and append the result to the list\n        result.append(tup1[i] % tup2[i])\n    \n    # Convert the result list back into a tuple and return it\n    return tuple(result)",
+        "execution_success": true,
+        "reward": 1.0,
+        "success": true,
         "error": "",
-        "failed_tests": [
-          "assert tuple_modulo((10, 4, 5, 6), (5, 6, 7, 5)) == (0, 4, 5, 1): name 'tuple_modulo' is not defined",
-          "assert tuple_modulo((11, 5, 6, 7), (6, 7, 8, 6)) == (5, 5, 6, 1): name 'tuple_modulo' is not defined",
-          "assert tuple_modulo((12, 6, 7, 8), (7, 8, 9, 7)) == (5, 6, 7, 1): name 'tuple_modulo' is not defined"
-        ]
+        "failed_tests": []
       }
     ]
   },
   "comparison": {
-    "grpo_accuracy": 0.0,
-    "srrl_accuracy": 0.0,
-    "accuracy_improvement": 0,
+    "grpo_accuracy": 0.6666666666666666,
+    "srrl_accuracy": 0.6666666666666666,
+    "accuracy_improvement": 0.0,
     "winner": "GRPO"
   }
 }
