@@ -8,13 +8,15 @@ import json
 import torch
 import re
 import math
+import argparse
+import wandb
 from pathlib import Path
 from datetime import datetime
 import functools, builtins  # Added for auto-flushing prints
 print = functools.partial(builtins.print, flush=True)  # Auto-flush all prints
 MAX_TRAIN_TOKENS = 1024  # Limit sequence length during training to avoid OOM
-GROUP_SIZE_GRPO = 4  # Number of c1 completions per problem for baseline GRPO
-GROUP_SIZE_SRRL = GROUP_SIZE_GRPO // 2  # SRRL samples half as many c1, but unlimited c2
+GROUP_SIZE_GRPO = 10  # Increased to match max completions budget of SRRL
+GROUP_SIZE_SRRL = 2  # Fixed c1 count for SRRL to control compute
 from loss import GRPOLoss, approx_kl_divergence
 
 def clear_memory():
@@ -42,24 +44,25 @@ def create_code_prompt(problem):
     match = re.search(r'(\w+)\s*\(', first_test)
     if match:
         function_name = match.group(1)
-    
-    prompt = f"""Problem: {problem["prompt"]}
 
-Test: {first_test}
+    prompt = f"""Problem: {problem['prompt']}
 
-Write a Python function named {function_name}. Use this EXACT format:
+    Test: {first_test}
 
-<reasoning>
-Your approach
-</reasoning>
+    You may first use an <analysis> section to think step-by-step. Anything inside <analysis> will be hidden from evaluation.
 
-<code>
-def {function_name}(parameters):
-    # working code
-    return result
-</code>
+    Then output the solution inside a <code> block.
 
-Start with <reasoning> - no other text first!"""
+    Format exactly:
+
+    <analysis>
+    ... your reasoning ...
+    </analysis>
+
+    <code>
+    def {function_name}(
+        # your implementation
+    </code>"""
     
     return prompt
 
@@ -134,29 +137,17 @@ Execution Result:
         refinement_prompt += f"\nExecution Trace:\n{execution_result['trace']}\n"
 
     refinement_prompt += f"""
-Analyze the error and provide a corrected solution. 
+Feel free to reason in an <analysis> section. Afterwards output the fixed code inside <code>...</code> as before.
 
-Instructions:
-1. Fix the issues in the code
-2. Ensure the function is named '{function_name}'
-3. Make sure it passes all test cases
-4. Format your response as:
-
-    <analysis>
-    Think step-by-step about why the tests failed and list 2-3 concrete hypotheses before you start coding.
-    </analysis>
-
-    <reasoning>
-    Briefly explain the fix you will apply.
-</reasoning>
+Format:
+<analysis>
+...thoughts...
+</analysis>
 
 <code>
 def {function_name}(...):
-    # Your corrected implementation here
-    pass
-</code>
-
-Generate the corrected function:"""
+    ...
+</code>"""
     
     return refinement_prompt
 
@@ -237,7 +228,7 @@ def train_grpo(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
             tokenizer.pad_token = tokenizer.eos_token
             
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", device_map="auto")
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, device_map="auto", attn_implementation="flash_attention_2")
         optimizer = torch.optim.AdamW(model.parameters(), lr=5e-8, weight_decay=0.01)
         
         print(f"Training on {len(train_problems)} problems")
@@ -262,7 +253,7 @@ def train_grpo(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
                         outputs = model.generate(
                             input_ids,
                             attention_mask=attention_mask,
-                            max_new_tokens=512,  # reduce to 512 to avoid instability
+                            max_new_tokens=1024,  # unified token budget
                             do_sample=True,
                             temperature=0.7,
                             top_p=0.9,
@@ -287,10 +278,13 @@ def train_grpo(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
                     exec_result = execute_code_with_tests(code, problem["test_list"], problem.get("test_imports", []))
                     reward = calculate_code_reward(exec_result)
                     local_rewards.append(reward)
-                    local_sequences.append(output)
+                    wandb.log({"phase":"grpo_c1","task_id": problem['task_id'],"reward": reward})
+                    # encode only the code tokens for training
+                    code_ids = tokenizer(code, return_tensors="pt", truncation=True, max_length=MAX_TRAIN_TOKENS).input_ids[0].to(device)
+                    local_sequences.append(code_ids)
                     
                     total_rewards.append(reward)
-                    total_sequences.append(output)
+                    total_sequences.append(code_ids)
                     
                     if reward >= 1.0:
                         print(f"    ✅ Success! Reward: {reward:.2f}")
@@ -347,7 +341,7 @@ def train_srrl(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
             tokenizer.pad_token = tokenizer.eos_token
             
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype="auto", device_map="auto")
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, device_map="auto", attn_implementation="flash_attention_2")
         optimizer = torch.optim.AdamW(model.parameters(), lr=5e-8, weight_decay=0.01)
         
         print(f"Training on {len(train_problems)} problems")
@@ -369,13 +363,16 @@ def train_srrl(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
                 
                 model.eval()
                 failed_attempts = []
+                local_rewards_sr = []
+                local_sequences_sr = []
+                c2_successes = 0
                 
                 with torch.no_grad():
                     try:
                         outputs = model.generate(
                             input_ids,
                             attention_mask=attention_mask,
-                            max_new_tokens=512,
+                            max_new_tokens=1024,
                             do_sample=True,
                             temperature=0.7,
                             top_p=0.9,
@@ -394,17 +391,29 @@ def train_srrl(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
                     completion = tokenizer.decode(output[input_ids.shape[1]:], skip_special_tokens=True)
                     code = extract_code_from_completion(completion)
                     
-                    print(f"    Generated c1: {code[:60]}...")
+                    print("    Generated c1 completion:\n" + code)
                     
                     exec_result = execute_code_with_tests(code, problem["test_list"], problem.get("test_imports", []))
                     reward = calculate_code_reward(exec_result)
                     
                     all_rewards.append(reward)
-                    all_sequences.append(output)
+                    code_ids = tokenizer(code, return_tensors="pt", truncation=True, max_length=MAX_TRAIN_TOKENS).input_ids[0].to(device)
+                    all_sequences.append(code_ids)
+                    local_rewards_sr.append(reward)
+                    local_sequences_sr.append(code_ids)
+                    wandb.log({"phase":"srrl_c1","task_id": problem['task_id'],"reward": reward})
                     
                     if not exec_result["success"]:
                         failed_attempts.append({"code": code, "execution_result": exec_result})
-                        print(f"    ❌ c1 failed, adding to refinement")
+                        print("    ❌ c1 failed, adding to refinement")
+                        if exec_result.get("error"):
+                            print("      Error:", exec_result["error"])
+                        if exec_result.get("failed_tests"):
+                            print("      Failed Tests:")
+                            for test in exec_result["failed_tests"]:
+                                print("        -", test)
+                        if exec_result.get("trace"):
+                            print("      Trace:\n" + exec_result["trace"])
                     else:
                         print(f"    ✅ c1 success! Reward: {reward:.2f}")
                 
@@ -423,11 +432,11 @@ def train_srrl(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
                                 ref_outputs = model.generate(
                                     ref_input_ids,
                                     attention_mask=ref_attention_mask,
-                                    max_new_tokens=2000,
+                                    max_new_tokens=1024,
                                     do_sample=True,
-                                    temperature=0.2,
-                                    top_p=0.5,
-                                    num_return_sequences=1,
+                                    temperature=0.3,
+                                    top_p=0.9,
+                                    num_return_sequences=4,
                                     pad_token_id=tokenizer.pad_token_id,
                                     use_cache=True
                                 )
@@ -442,19 +451,32 @@ def train_srrl(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
                             ref_completion = tokenizer.decode(ref_output[ref_input_ids.shape[1]:], skip_special_tokens=True)
                             ref_code = extract_code_from_completion(ref_completion)
                             
-                            print(f"    Generated c2: {ref_code[:60]}...")
+                            print("    Generated c2 completion:\n" + ref_code)
                             
                             ref_exec_result = execute_code_with_tests(ref_code, problem["test_list"], problem.get("test_imports", []))
                             ref_reward = calculate_code_reward(ref_exec_result)
                             
                             all_rewards.append(ref_reward)
-                            all_sequences.append(ref_output)
+                            ref_code_ids = tokenizer(ref_code, return_tensors="pt", truncation=True, max_length=MAX_TRAIN_TOKENS).input_ids[0].to(device)
+                            all_sequences.append(ref_code_ids)
+                            local_rewards_sr.append(ref_reward)
+                            local_sequences_sr.append(ref_code_ids)
+                            wandb.log({"phase":"srrl_c2","task_id": problem['task_id'],"reward": ref_reward})
                             refinement_count += 1
                             
                             if ref_reward >= 1.0:
+                                c2_successes += 1
                                 print(f"    🎯 c2 success! Reward: {ref_reward:.2f}")
                             else:
                                 print(f"    🔄 c2 failed. Reward: {ref_reward:.2f}")
+                                if ref_exec_result.get("error"):
+                                    print("      c2 Error:", ref_exec_result["error"])
+                                if ref_exec_result.get("failed_tests"):
+                                    print("      Failed Tests:")
+                                    for test in ref_exec_result["failed_tests"]:
+                                        print("        -", test)
+                                if ref_exec_result.get("trace"):
+                                    print("      Trace:\n" + ref_exec_result["trace"])
             
             if not all_rewards:
                 print(f"  No valid sequences, skipping training")
@@ -463,10 +485,13 @@ def train_srrl(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
             avg_reward = sum(all_rewards) / len(all_rewards)
             success_rate = sum(1 for r in all_rewards if r >= 1.0) / len(all_rewards)
             print(f"  Avg reward: {avg_reward:.3f}, Success: {success_rate:.1%}")
-            print(f"  Refinements: {refinement_count}")
-            
-            if avg_reward > 0 and len(all_sequences) >= 2:
-                stable_train_sample_wise(model, optimizer, tokenizer, all_sequences, all_rewards, device, label="SRRL")
+            c2_rate = c2_successes / refinement_count if refinement_count else 0
+            print(f"  Refinements: {refinement_count}, c2 success rate: {c2_rate:.1%}")
+            wandb.log({"phase":"srrl_problem_summary","task_id": problem['task_id'],"c2_success_rate": c2_rate,"refinements": refinement_count})
+
+            # per-problem advantage normalisation
+            if any(local_rewards_sr):
+                stable_train_sample_wise(model, optimizer, tokenizer, local_sequences_sr, local_rewards_sr, device, label="SRRL")
              
             clear_memory()
         
@@ -498,11 +523,12 @@ def evaluate_model(model_path, method_name, test_problems):
         from mbpp_utils import execute_code_with_tests, calculate_code_reward
         
         tokenizer = AutoTokenizer.from_pretrained(model_path)
-        # Use float32 during evaluation to avoid NaN/Inf in logits causing CUDA asserts
+        # Use bfloat16 to stay compatible with FlashAttention 2
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
-            torch_dtype=torch.float32,
+            torch_dtype=torch.bfloat16,
             device_map="auto",
+            attn_implementation="flash_attention_2",
         )
         model.eval()
         device = next(model.parameters()).device
@@ -525,7 +551,7 @@ def evaluate_model(model_path, method_name, test_problems):
                     outputs = model.generate(
                         input_ids,
                         attention_mask=attention_mask,
-                        max_new_tokens=512,
+                        max_new_tokens=1024,
                         do_sample=True,
                         temperature=0.7,
                         top_p=0.9,
@@ -593,28 +619,39 @@ def evaluate_model(model_path, method_name, test_problems):
         return {"method": method_name.upper(), "error": str(e)}
 
 def main():
+    import argparse, time
+    parser = argparse.ArgumentParser(description="Run GRPO and/or SRRL experiment")
+    parser.add_argument("--method", choices=["both", "grpo", "srrl"], default="both", help="Which training pipeline to run (default: both)")
+    args = parser.parse_args()
+
+    # initialize wandb
+    wandb.init(project="srrl_vs_grpo", name=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}", config={"method": args.method, "group_size_grpo": GROUP_SIZE_GRPO, "group_size_srrl": GROUP_SIZE_SRRL})
+
     print("🎯 STABLE GRPO vs SRRL EXPERIMENT")
     print("=" * 50)
     
     from mbpp_utils import load_mbpp_dataset
     dataset = load_mbpp_dataset()
     
-    train_problems = dataset[:3]
-    test_problems = dataset[10:13]
+    train_problems = dataset[:30]
+    test_problems = dataset[30:60]
     
     print(f"Training: {len(train_problems)} problems")
     print(f"Testing: {len(test_problems)} problems")
     print("🔧 Fixed CUDA errors + XML prompts!")
-    
-    grpo_success = train_grpo(train_problems)
-    
-    # Force CUDA cleanup and wait between training phases to prevent corruption
-    clear_memory()
-    import time
-    time.sleep(5)
-    print("\n⚡ CUDA cleanup complete, starting SRRL...")
-    
-    srrl_success = train_srrl(train_problems)
+
+    grpo_success = False
+    srrl_success = False
+
+    if args.method in ("both", "grpo"):
+        grpo_success = train_grpo(train_problems)
+
+    if args.method in ("both", "srrl"):
+        if grpo_success and args.method == "both":
+            clear_memory()
+            time.sleep(5)
+            print("\n⚡ CUDA cleanup complete, starting SRRL...")
+        srrl_success = train_srrl(train_problems)
     
     if not (grpo_success or srrl_success):
         print("❌ Both failed!")
@@ -666,6 +703,7 @@ def main():
     
     print(f"\n✅ STABLE EXPERIMENT COMPLETE!")
     print("📋 Real results with CUDA fixes!")
+    wandb.finish()
 
 if __name__ == "__main__":
     main()

@@ -51,7 +51,34 @@ def execute_code_with_tests(code: str, test_list: List[str], test_imports: List[
     # Add test cases
     test_code = []
     for test in test_list:
-        test_code.append(f"try:\n    {test}\n    print(f'PASS: {test}')\nexcept Exception as e:\n    print(f'FAIL: {test} - {{str(e)}}')")
+        escaped = repr(test)
+        stripped = test.strip()
+        code_block = []
+        if stripped.startswith('assert') and '==' in stripped:
+            # pattern: assert expr == expected
+            expr_part = stripped[len('assert'):].strip()
+            lhs, rhs = expr_part.split('==', 1)
+            lhs = lhs.strip()
+            rhs = rhs.strip()
+            code_block.append("try:")
+            code_block.append(f"    _val = {lhs}")
+            code_block.append(f"    _expected = {rhs}")
+            code_block.append(f"    assert _val == _expected")
+            code_block.append(f"    print('PASS: ' + {escaped} + ' -> ' + repr(_val))")
+            code_block.append("except AssertionError:")
+            code_block.append(f"    print('FAIL: ' + {escaped} + ' -> ' + repr(_val) + ' (expected ' + repr(_expected) + ')')")
+            code_block.append("except Exception as e:")
+            code_block.append(f"    print('FAIL: ' + {escaped} + ' -> ' + e.__class__.__name__ + ': ' + str(e))")
+        else:
+            # generic execution with value capture if possible
+            code_block.append("try:")
+            code_block.append(f"    _val = {stripped if stripped.startswith('assert') else stripped}")
+            if stripped.startswith('assert'):
+                code_block.append(f"    {stripped}")
+            code_block.append(f"    print('PASS: ' + {escaped})")
+            code_block.append("except Exception as e:")
+            code_block.append(f"    print('FAIL: ' + {escaped} + ' -> ' + e.__class__.__name__ + ': ' + str(e))")
+        test_code.append("\n".join(code_block))
     
     full_code += "\n".join(test_code)
     
@@ -65,28 +92,27 @@ def execute_code_with_tests(code: str, test_list: List[str], test_imports: List[
     }
     
     try:
-        # Capture stdout and stderr
-        stdout_capture = StringIO()
-        stderr_capture = StringIO()
-        
-        with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
-            # Execute the code in a restricted globals environment
-            globals_dict = {
-                "__builtins__": __builtins__,
-                "math": __import__("math"),
-                "re": __import__("re"),
-                "itertools": __import__("itertools"),
-                "collections": __import__("collections"),
-                "heapq": __import__("heapq"),
-                "operator": __import__("operator"),
-            }
-            
-            exec(full_code, globals_dict)
-        
-        # Parse output
-        stdout_output = stdout_capture.getvalue()
-        stderr_output = stderr_capture.getvalue()
-        
+        # Execute the code in a separate process with a hard timeout
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tmp_file:
+            tmp_file.write(full_code)
+            tmp_path = tmp_file.name
+        try:
+            completed = subprocess.run([
+                sys.executable,
+                tmp_path
+            ], capture_output=True, text=True, timeout=timeout)
+            stdout_output = completed.stdout
+            stderr_output = completed.stderr
+        except subprocess.TimeoutExpired:
+            result["error"] = "TIMEOUT"
+            result["failed_tests"] = test_list
+            return result
+        finally:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        # Combine stdout & stderr for trace
         result["trace"] = stdout_output + stderr_output
         
         # Parse test results

@@ -1,161 +1,129 @@
-# GRPO vs SRRL Experiment
+# SRRL vs GRPO Code Generation Experiment
 
-This repository implements and compares two reinforcement learning methods for code generation:
+**Fork of the original SRRL implementation** - This repository implements and compares two reinforcement learning methods for code generation on the MBPP dataset.
 
-1. **GRPO (Group Relative Policy Optimization)** - The baseline method
-2. **SRRL (Self-Refined RL)** - A novel method that uses execution feedback to refine failed attempts
+## Methods Compared
 
-## Overview
+### 1. GRPO (Group Relative Policy Optimization) - Baseline
+- Samples multiple code completions from problem prompts
+- Executes code against test cases to compute rewards
+- Trains policy using group-relative advantages
 
-**GRPO** samples completions from prompts and trains on the rewards based on test case execution.
+### 2. SRRL (Self-Refined Reinforcement Learning) - Novel Method
+- **Phase 1 (c1)**: Generate initial code attempts from original prompts
+- **Phase 2 (c2)**: For failed attempts, create refined prompts with:
+  - Detailed execution traces and error messages
+  - Concrete input/output examples showing expected vs actual results
+  - Self-reflection analysis sections for better debugging
+- **Training**: Policy gradient updates on both c1 and c2 completions with per-problem advantage normalization
 
-**SRRL** extends GRPO by:
-1. Sampling initial completions (c1) from the original prompt
-2. Identifying failed completions and generating execution traces
-3. Creating refined prompts with error feedback for failed attempts
-4. Sampling refined completions (c2) from the refined prompts  
-5. Training on both c1 and c2 completions together
+## Key Experiment Features
 
-## Dataset & Model
+### Dataset & Scale
+- **Dataset**: MBPP (Mostly Basic Python Problems) - 30 training problems, 30 test problems
+- **Model**: Qwen/Qwen2.5-3B-Instruct with Flash-Attention 2 (bfloat16)
+- **Compute Control**: GRPO uses 10 completions, SRRL uses 2 c1 + up to 8 c2 completions
 
-- **Dataset**: MBPP (Mostly Basic Python Problems) - coding problems with test cases
-- **Model**: Qwen/Qwen2.5-3B-Instruct - instruction-tuned model for code generation
-- **Evaluation**: Pass@k accuracy on held-out test set
+### Advanced Execution & Feedback
+- **Sandboxed Execution**: Process-isolated code execution with hard timeouts (10s)
+- **Rich Error Feedback**: Shows actual vs expected values for failed assertions
+- **Timeout Handling**: Detects infinite loops and provides specific timeout feedback
+- **Test Result Parsing**: Detailed PASS/FAIL logs with concrete return values
+
+### Training Improvements
+- **Per-Problem Training**: Advantage normalization per problem for stronger c2 signals
+- **Multi-Sample c2**: 4 refinement attempts per failure with temperature=0.3 for focused exploration
+- **Flash-Attention**: Memory-efficient attention for longer sequences
+- **Comprehensive Logging**: W&B integration tracking every completion and reward
 
 ## Quick Start
 
-### 1. Setup Environment
-
+### Run Full Experiment
 ```bash
-conda create --name srrl python=3.12 -y
-conda activate srrl
-pip install -r requirements.txt
+# Train both methods and evaluate
+python experiment.py
+
+# Train only GRPO
+python experiment.py --method grpo
+
+# Train only SRRL  
+python experiment.py --method srrl
 ```
 
-### 2. Run Full Experiment (Train + Evaluate)
-
-```bash
-python run_experiment.py --mode both --max_problems 50 --test_size 100
-```
-
-This will:
-1. Train a GRPO model 
-2. Train an SRRL model
-3. Evaluate both models on test set
-4. Generate comparison results
-
-### 3. Run Training Only
-
-```bash
-# Train GRPO baseline
-python run_experiment.py --mode train --max_problems 50
-
-# Or train specific method by modifying train_srrl.py:
-# Set use_srrl = False for GRPO
-# Set use_srrl = True for SRRL
-python train_srrl.py
-```
-
-### 4. Run Evaluation Only
-
-```bash
-python run_experiment.py --mode eval \
-    --grpo_path ./output/grpo_final \
-    --srrl_path ./output/srrl_final \
-    --test_size 100 --num_samples 5
-```
-
-### 5. Manual Evaluation
-
-```bash
-python evaluate.py \
-    --grpo_model ./output/grpo_final \
-    --srrl_model ./output/srrl_final \
-    --test_size 100 --num_samples 5
-```
-
-## Key Components
-
-### Core Files
-
-- `train_srrl.py` - Main training script supporting both GRPO and SRRL
-- `mbpp_utils.py` - Dataset loading and code execution utilities
-- `evaluate.py` - Model evaluation and comparison script
-- `run_experiment.py` - Experiment runner for easy GRPO vs SRRL comparison
+### Key Files
+- `experiment.py` - Main experiment runner with W&B logging
+- `mbpp_utils.py` - Dataset loading and sandboxed code execution
 - `loss.py` - GRPO loss implementation
-- `replay_buffer.py` - Experience replay buffer for RL training
-
-### Key Features
-
-- **Safe Code Execution**: Sandboxed execution environment for test cases
-- **Execution Traces**: Detailed error feedback for failed code attempts  
-- **Compute Control**: Balanced c1/c2 sampling to control computational overhead
-- **Comprehensive Metrics**: Pass@1, Pass@k, average rewards, success rates
-- **Experiment Tracking**: WandB integration for training monitoring
-
-## Configuration
-
-Key hyperparameters in `train_srrl.py`:
-
-```python
-use_srrl = True              # Enable/disable SRRL refinement
-max_problems = 50            # Training dataset size  
-group_size = 8               # Completions per problem
-rollouts_per_step = 16       # Problems per training step
-lr = 1e-5                    # Learning rate
-temperature = 0.8            # Sampling temperature
-max_length = 1024            # Max sequence length
-```
 
 ## Expected Results
 
-SRRL should outperform GRPO by providing the model with:
-1. **Error feedback** - Explicit information about why code failed
-2. **Refinement opportunities** - Chance to fix mistakes with guided prompts
-3. **Diverse experiences** - Both original attempts and refined attempts for training
+SRRL aims to outperform GRPO through:
 
-The evaluation script will show improvements in Pass@k accuracy and average rewards.
+1. **Concrete Error Feedback**: Shows exact input/output mismatches rather than generic error messages
+2. **Self-Reflection**: Allows model to analyze failures before attempting fixes
+3. **Targeted Exploration**: Lower temperature c2 generation focuses on bug fixes rather than random exploration
+4. **Stronger Training Signal**: Per-problem advantage normalization gives successful refinements higher weight
+
+The experiment tracks:
+- **c2 Success Rate**: Percentage of failed c1 attempts rescued by refinement
+- **Overall Accuracy**: Pass@1 on held-out test problems
+- **Training Dynamics**: Reward distributions and convergence patterns
 
 ## Method Details
 
-### GRPO Baseline
-1. Sample completions from original prompts
-2. Execute code with test cases to get rewards
-3. Train with GRPO loss on policy optimization
-
-### SRRL Method  
-1. Sample c1 completions from original prompts
-2. Execute and identify failed attempts
-3. Generate refined prompts with execution traces
-4. Sample c2 completions from refined prompts  
-5. Train with GRPO loss on combined c1+c2 experiences
-
-### Refinement Prompt Template
+### Refinement Prompt Structure
 ```
 The following code attempt failed to solve the problem correctly:
 
 Original Problem: [problem description]
 
-Failed Code: [generated code]
-
-Execution Result:
-Error: [error message]
-Failed Tests: [specific test failures]
-Execution Trace: [detailed trace]
-
-Please analyze the error and provide a corrected solution...
+Failed Code:
+```python
+[generated code]
 ```
 
-## Contributing
+Execution Result:
+FAIL: assert func("input") == "expected" -> got "actual" (expected "expected")
+Error: [detailed traceback]
+Execution Trace: [stdout/stderr]
 
-To add new features or methods:
-1. Extend `mbpp_utils.py` for dataset/execution utilities
-2. Modify `train_srrl.py` for new training procedures  
-3. Update `evaluate.py` for new evaluation metrics
-4. Add configuration options to `run_experiment.py`
+Feel free to reason in an <analysis> section. Afterwards output the fixed code inside <code>...</code>
+
+Format:
+<analysis>
+...thoughts...
+</analysis>
+
+<code>
+def func(...):
+    ...
+</code>
+```
+
+### Training Process
+1. **GRPO**: Standard policy gradient on 10 completions per problem
+2. **SRRL**: 
+   - Generate 2 c1 completions
+   - For each failure, generate 4 c2 refinement attempts
+   - Train on all completions with per-problem advantage baseline
+   - Track c2 rescue rate and refinement statistics
+
+## Monitoring & Results
+
+The experiment logs to Weights & Biases:
+- Individual completion rewards (phase: grpo_c1, srrl_c1, srrl_c2)
+- Per-problem c2 success rates and refinement counts
+- Final accuracy comparison between methods
+
+Console output shows:
+- Full code completions during training (for debugging)
+- Detailed execution traces for failures
+- c2 success rate per problem
+- Final accuracy comparison
 
 ## References
 
-- [MBPP Dataset](https://github.com/google-research/google-research/tree/master/mbpp)  
-- [Qwen2.5 Models](https://huggingface.co/Qwen)
-- [GRPO: Group Relative Policy Optimization](https://arxiv.org/abs/2402.03300)
+- [MBPP Dataset](https://github.com/google-research/google-research/tree/master/mbpp)
+- [Qwen2.5 Models](https://huggingface.co/Qwen)  
+- [Flash-Attention](https://github.com/Dao-AILab/flash-attention)
+- [GRPO Paper](https://arxiv.org/abs/2402.03300)
