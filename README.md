@@ -1,6 +1,6 @@
 # SRRL vs GRPO Code Generation Experiment
 
-**Fork of the original SRRL implementation** - This repository implements and compares two reinforcement learning methods for code generation on the MBPP dataset.
+**Fork of the original GRPO implementation** - This repository implements and compares two reinforcement learning methods for code generation on the MBPP dataset.
 
 ## Methods Compared
 
@@ -10,6 +10,7 @@
 - Trains policy using group-relative advantages
 
 ### 2. SRRL (Self-Refined Reinforcement Learning) - Novel Method
+- Basically GRPO but with a self-reflection step.
 - **Phase 1 (c1)**: Generate initial code attempts from original prompts
 - **Phase 2 (c2)**: For failed attempts, create refined prompts with:
   - Detailed execution traces and error messages
