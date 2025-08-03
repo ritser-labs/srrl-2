@@ -125,11 +125,14 @@ Execution Result:
     if execution_result.get("error"):
         refinement_prompt += f"Error: {execution_result['error']}\n"
     
-    if execution_result.get("failed_tests"):
-        refinement_prompt += f"Failed Tests:\n"
-        for test in execution_result["failed_tests"]:
+    if execution_result.get('failed_tests'):
+        refinement_prompt += "Failed Tests:\n"
+        for test in execution_result['failed_tests']:
             refinement_prompt += f"- {test}\n"
-    
+
+    if execution_result.get('trace'):
+        refinement_prompt += f"\nExecution Trace:\n{execution_result['trace']}\n"
+
     refinement_prompt += f"""
 Analyze the error and provide a corrected solution. 
 
@@ -139,8 +142,12 @@ Instructions:
 3. Make sure it passes all test cases
 4. Format your response as:
 
-<reasoning>
-Explain what was wrong and how you fixed it
+    <analysis>
+    Think step-by-step about why the tests failed and list 2-3 concrete hypotheses before you start coding.
+    </analysis>
+
+    <reasoning>
+    Briefly explain the fix you will apply.
 </reasoning>
 
 <code>
@@ -418,8 +425,8 @@ def train_srrl(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
                                     attention_mask=ref_attention_mask,
                                     max_new_tokens=2000,
                                     do_sample=True,
-                                    temperature=0.7,
-                                    top_p=0.9,
+                                    temperature=0.2,
+                                    top_p=0.5,
                                     num_return_sequences=1,
                                     pad_token_id=tokenizer.pad_token_id,
                                     use_cache=True
@@ -459,7 +466,7 @@ def train_srrl(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
             print(f"  Refinements: {refinement_count}")
             
             if avg_reward > 0 and len(all_sequences) >= 2:
-                print(f"  🔄 Skipping aggregated training; already trained per problem above")
+                stable_train_sample_wise(model, optimizer, tokenizer, all_sequences, all_rewards, device, label="SRRL")
              
             clear_memory()
         
