@@ -1,0 +1,111 @@
+{
+  "experiment_info": {
+    "date": "2025-08-03T03:25:06.793041",
+    "model": "Qwen/Qwen2.5-3B-Instruct",
+    "dataset": "MBPP",
+    "training_problems": 3,
+    "test_problems": 3
+  },
+  "grpo": {
+    "method": "GRPO",
+    "accuracy": 0.0,
+    "avg_reward": 0.0,
+    "correct_problems": 0,
+    "total_problems": 3,
+    "detailed_results": [
+      {
+        "task_id": 614,
+        "generated_code": "[(1, 2), (3, 4), (5, 6)]",
+        "execution_success": false,
+        "reward": 0.0,
+        "success": false,
+        "error": "",
+        "failed_tests": [
+          "assert cummulative_sum([(1, 3), (5, 6, 7), (2, 6)]) == 30: name 'cummulative_sum' is not defined",
+          "assert cummulative_sum([(2, 4), (6, 7, 8), (3, 7)]) == 37: name 'cummulative_sum' is not defined",
+          "assert cummulative_sum([(3, 5), (7, 8, 9), (4, 8)]) == 44: name 'cummulative_sum' is not defined"
+        ]
+      },
+      {
+        "task_id": 615,
+        "generated_code": "The input tuple will contain at least two sub-tuples, each with integer values. Each sub-tuple can have different lengths.\n\nExample:\nInput: ((1, 2, 3), (4, 5, 6, 7), (8, 9))\nOutput: [2.0, 5.5, 8.5]\n\nYou should handle cases where the",
+        "execution_success": false,
+        "reward": 0.0,
+        "success": false,
+        "error": "invalid syntax (<string>, line 1)",
+        "failed_tests": [
+          "assert average_tuple(((10, 10, 10, 12), (30, 45, 56, 45), (81, 80, 39, 32), (1, 2, 3, 4)))==[30.5, 34.25, 27.0, 23.25]",
+          "assert average_tuple(((1, 1, -5), (30, -15, 56), (81, -60, -39), (-10, 2, 3)))== [25.5, -18.0, 3.75]",
+          "assert average_tuple( ((100, 100, 100, 120), (300, 450, 560, 450), (810, 800, 390, 320), (10, 20, 30, 40)))==[305.0, 342.5, 270.0, 232.5]"
+        ]
+      },
+      {
+        "task_id": 616,
+        "generated_code": "The result should be returned as a list.\n\nThe function should also handle cases where the tuples contain negative numbers and ensure that the result is always a non-negative integer.\n\nExample:\n\nInput:\ntuple1 = (5, 9, -3)\ntuple2 = (4, 7, 8)\n\nOutput:\n[1, 1, 1]\n\nNote: In this example, the modulo",
+        "execution_success": false,
+        "reward": 0.0,
+        "success": false,
+        "error": "invalid syntax (<string>, line 1)",
+        "failed_tests": [
+          "assert tuple_modulo((10, 4, 5, 6), (5, 6, 7, 5)) == (0, 4, 5, 1)",
+          "assert tuple_modulo((11, 5, 6, 7), (6, 7, 8, 6)) == (5, 5, 6, 1)",
+          "assert tuple_modulo((12, 6, 7, 8), (7, 8, 9, 7)) == (5, 6, 7, 1)"
+        ]
+      }
+    ]
+  },
+  "srrl": {
+    "method": "SRRL",
+    "accuracy": 0.0,
+    "avg_reward": 0.0,
+    "correct_problems": 0,
+    "total_problems": 3,
+    "detailed_results": [
+      {
+        "task_id": 614,
+        "generated_code": "my_list = [(1, 2), (3, 4), ((5, 6), (7, 8)), (((9, 10), (11, 12)),)]",
+        "execution_success": false,
+        "reward": 0.0,
+        "success": false,
+        "error": "",
+        "failed_tests": [
+          "assert cummulative_sum([(1, 3), (5, 6, 7), (2, 6)]) == 30: name 'cummulative_sum' is not defined",
+          "assert cummulative_sum([(2, 4), (6, 7, 8), (3, 7)]) == 37: name 'cummulative_sum' is not defined",
+          "assert cummulative_sum([(3, 5), (7, 8, 9), (4, 8)]) == 44: name 'cummulative_sum' is not defined"
+        ]
+      },
+      {
+        "task_id": 615,
+        "generated_code": "Each inner tuple represents a data point with three values. The function should handle cases where the inner tuples do not have exactly three elements by skipping those tuples and continuing to the next one. \n\nExample input: `data_points = ((1, 2, 3), (4, 5, 6), (7,), (8, 9, 10, 11))",
+        "execution_success": false,
+        "reward": 0.0,
+        "success": false,
+        "error": "invalid syntax (<string>, line 1)",
+        "failed_tests": [
+          "assert average_tuple(((10, 10, 10, 12), (30, 45, 56, 45), (81, 80, 39, 32), (1, 2, 3, 4)))==[30.5, 34.25, 27.0, 23.25]",
+          "assert average_tuple(((1, 1, -5), (30, -15, 56), (81, -60, -39), (-10, 2, 3)))== [25.5, -18.0, 3.75]",
+          "assert average_tuple( ((100, 100, 100, 120), (300, 450, 560, 450), (810, 800, 390, 320), (10, 20, 30, 40)))==[305.0, 342.5, 270.0, 232.5]"
+        ]
+      },
+      {
+        "task_id": 616,
+        "generated_code": "tuple1 = (10, 20, 30)\ntuple2 = (4, 5, 6)\n\n# Expected Output:\n# [2, 0, 4]",
+        "execution_success": false,
+        "reward": 0.0,
+        "success": false,
+        "error": "",
+        "failed_tests": [
+          "assert tuple_modulo((10, 4, 5, 6), (5, 6, 7, 5)) == (0, 4, 5, 1): name 'tuple_modulo' is not defined",
+          "assert tuple_modulo((11, 5, 6, 7), (6, 7, 8, 6)) == (5, 5, 6, 1): name 'tuple_modulo' is not defined",
+          "assert tuple_modulo((12, 6, 7, 8), (7, 8, 9, 7)) == (5, 6, 7, 1): name 'tuple_modulo' is not defined"
+        ]
+      }
+    ]
+  },
+  "comparison": {
+    "grpo_accuracy": 0.0,
+    "srrl_accuracy": 0.0,
+    "accuracy_improvement": 0,
+    "winner": "GRPO"
+  }
+}

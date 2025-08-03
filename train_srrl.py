@@ -467,5 +467,29 @@ def main():
         tokenizer.save_pretrained(save_path)
 
 
+def train_with_params(use_srrl: bool, max_problems: int, rollouts_per_step: int, 
+                      max_length: int, epochs_per_step: int, output_dir: str) -> bool:
+    """Train model with specified parameters. Returns True if successful."""
+    try:
+        from pathlib import Path
+        
+        # Override global parameters
+        globals()['use_srrl'] = use_srrl
+        globals()['max_problems'] = max_problems
+        globals()['rollouts_per_step'] = rollouts_per_step
+        globals()['max_length'] = max_length
+        globals()['epochs_per_step'] = epochs_per_step
+        globals()['checkpoint_path'] = Path(output_dir)
+        
+        # Run main training
+        main()
+        return True
+        
+    except Exception as e:
+        print(f"Training failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False
+
 if __name__ == "__main__":
     main() 
