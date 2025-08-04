@@ -15,9 +15,34 @@ from datetime import datetime
 import functools, builtins  # Added for auto-flushing prints
 print = functools.partial(builtins.print, flush=True)  # Auto-flush all prints
 MAX_TRAIN_TOKENS = 1024  # Limit sequence length during training to avoid OOM
-GROUP_SIZE_GRPO = 10  # Increased to match max completions budget of SRRL
-GROUP_SIZE_SRRL = 2  # Fixed c1 count for SRRL to control compute
+
+# ---------- Compute budget (keep methods comparable) ----------
+MAX_COMPLETION_BUDGET = 10     # Unified number of completions (per-problem) allowed
+GROUP_SIZE_GRPO = MAX_COMPLETION_BUDGET  # GRPO consumes the full budget up-front
+GROUP_SIZE_SRRL = 2            # SRRL initial (c1) completions; remaining budget used for refinements
 from loss import GRPOLoss, approx_kl_divergence
+
+# --------------------- W&B Logging Helpers ---------------------
+
+def log_completion(table_name: str, **kwargs):
+    """Utility to accumulate rows in a W&B Table.
+
+    Stores a set of lightweight W&B Tables on the active run so we only
+    need to call `wandb.log` once per table, avoiding huge numbers of
+    individual log calls that slow the run down.
+    """
+    global _WB_TABLE_CACHE
+    if "_WB_TABLE_CACHE" not in globals():
+        _WB_TABLE_CACHE = {}
+    if table_name not in _WB_TABLE_CACHE:
+        _WB_TABLE_CACHE[table_name] = wandb.Table(columns=list(kwargs.keys()))
+    _WB_TABLE_CACHE[table_name].add_data(*kwargs.values())
+
+def flush_logged_tables():
+    """Flush all cached tables to W&B so they are persisted."""
+    global _WB_TABLE_CACHE
+    for name, tbl in globals().get("_WB_TABLE_CACHE", {}).items():
+        wandb.log({name: tbl})
 
 def clear_memory():
     if torch.cuda.is_available():
@@ -235,6 +260,7 @@ def train_grpo(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
         
         for step in range(num_steps):
             print(f"Step {step+1}/{num_steps}")
+            comp_counter = 0
             
             total_rewards = []
             total_sequences = []
@@ -279,6 +305,8 @@ def train_grpo(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
                     reward = calculate_code_reward(exec_result)
                     local_rewards.append(reward)
                     wandb.log({"phase":"grpo_c1","task_id": problem['task_id'],"reward": reward})
+                    log_completion("grpo_c1_table", phase="grpo_c1", step=step+1, task_id=problem['task_id'], completion_idx=comp_counter, reward=reward, success=exec_result["success"], code=code)
+                    comp_counter += 1
                     # encode only the code tokens for training
                     code_ids = tokenizer(code, return_tensors="pt", truncation=True, max_length=MAX_TRAIN_TOKENS).input_ids[0].to(device)
                     local_sequences.append(code_ids)
@@ -348,6 +376,7 @@ def train_srrl(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
         
         for step in range(num_steps):
             print(f"Step {step+1}/{num_steps}")
+            comp_counter = 0
             
             all_rewards = []
             all_sequences = []
@@ -402,6 +431,8 @@ def train_srrl(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
                     local_rewards_sr.append(reward)
                     local_sequences_sr.append(code_ids)
                     wandb.log({"phase":"srrl_c1","task_id": problem['task_id'],"reward": reward})
+                    log_completion("srrl_c1_table", phase="c1", step=step+1, task_id=problem['task_id'], completion_idx=comp_counter, reward=reward, success=exec_result["success"], code=code)
+                    comp_counter += 1
                     
                     if not exec_result["success"]:
                         failed_attempts.append({"code": code, "execution_result": exec_result})
@@ -419,8 +450,16 @@ def train_srrl(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
                 
                 if failed_attempts:
                     print(f"  SRRL: Refining {len(failed_attempts)} failures...")
-                    
+
+                    # --- Controlled compute budget (same total completions as GRPO) ---
+                    remaining_budget = MAX_COMPLETION_BUDGET - GROUP_SIZE_SRRL
+
                     for attempt in failed_attempts:
+                        if remaining_budget <= 0:
+                            break
+                        # Cap to 4 refinements per failure and never exceed remaining budget
+                        n_refine = min(4, remaining_budget)
+                        remaining_budget -= n_refine
                         refined_prompt = create_refinement_prompt(problem["prompt"], attempt["code"], attempt["execution_result"])
                         
                         ref_inputs = tokenizer(refined_prompt, return_tensors="pt", truncation=True, max_length=600)
@@ -436,7 +475,7 @@ def train_srrl(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
                                     do_sample=True,
                                     temperature=0.3,
                                     top_p=0.9,
-                                    num_return_sequences=4,
+                                    num_return_sequences=n_refine,
                                     pad_token_id=tokenizer.pad_token_id,
                                     use_cache=True
                                 )
@@ -455,6 +494,10 @@ def train_srrl(train_problems, num_steps=1):  # Reduce to 1 step to avoid corrup
                             
                             ref_exec_result = execute_code_with_tests(ref_code, problem["test_list"], problem.get("test_imports", []))
                             ref_reward = calculate_code_reward(ref_exec_result)
+
+                            # Log refinement completion
+                            log_completion("srrl_c2_table", phase="c2", step=step+1, task_id=problem['task_id'], completion_idx=comp_counter, reward=ref_reward, success=ref_exec_result["success"], code=ref_code)
+                            comp_counter += 1
                             
                             all_rewards.append(ref_reward)
                             ref_code_ids = tokenizer(ref_code, return_tensors="pt", truncation=True, max_length=MAX_TRAIN_TOKENS).input_ids[0].to(device)
@@ -589,6 +632,7 @@ def evaluate_model(model_path, method_name, test_problems):
                 "failed_tests": exec_result.get("failed_tests", [])
             }
             results.append(result)
+            log_completion(f"eval_{method_name}_table", method=method_name, task_id=problem['task_id'], reward=reward, success=success, code=code)
             
             total_reward += reward
             if success:
@@ -618,23 +662,81 @@ def evaluate_model(model_path, method_name, test_problems):
         traceback.print_exc()
         return {"method": method_name.upper(), "error": str(e)}
 
+# ==============================
+# Statistical Analysis Utilities
+# ==============================
+
+def wilson_confidence_interval(successes: int, n: int, confidence: float = 0.95):
+    """Wilson score interval for a binomial proportion."""
+    if n == 0:
+        return (0.0, 1.0)
+    z = 1.96  # for 95% confidence; extend later if needed
+    phat = successes / n
+    denom = 1 + z**2 / n
+    centre = phat + z**2 / (2 * n)
+    margin = z * math.sqrt((phat * (1 - phat) + z**2 / (4 * n)) / n)
+    lower = (centre - margin) / denom
+    upper = (centre + margin) / denom
+    return max(0.0, lower), min(1.0, upper)
+
+
+def mcnemar_test(grpo_results, srrl_results):
+    """McNemar's test for paired binary outcomes.
+
+    Returns p-value alongside discordant pair counts (b and c).
+    b = SRRL correct, GRPO wrong
+    c = GRPO correct, SRRL wrong
+    """
+    b = c = 0
+    for g, s in zip(grpo_results, srrl_results):
+        if g["success"] and not s["success"]:
+            c += 1
+        elif s["success"] and not g["success"]:
+            b += 1
+    n = b + c
+    if n == 0:
+        return 1.0, b, c
+    chi2 = (abs(b - c) - 1) ** 2 / n  # continuity correction
+    p_value = math.erfc(math.sqrt(chi2 / 2))  # survival function of chi2_1
+    return p_value, b, c
+
+
+def required_sample_size(p1: float, p2: float, alpha: float = 0.05, power: float = 0.8):
+    """Rough sample size estimate for two-proportion z-test."""
+    # Using normal approximation
+    z_alpha = 1.96  # two-sided alpha 0.05
+    z_beta = 0.84   # power 0.8 -> beta 0.2
+    pbar = (p1 + p2) / 2
+    delta = abs(p2 - p1)
+    if delta == 0:
+        return float("inf")
+    num = (z_alpha * math.sqrt(2 * pbar * (1 - pbar)) + z_beta * math.sqrt(p1 * (1 - p1) + p2 * (1 - p2))) ** 2
+    return int(math.ceil(num / (delta ** 2)))
+
 def main():
     import argparse, time
     parser = argparse.ArgumentParser(description="Run GRPO and/or SRRL experiment")
     parser.add_argument("--method", choices=["both", "grpo", "srrl"], default="both", help="Which training pipeline to run (default: both)")
+    parser.add_argument("--train_size", type=int, default=60, help="Number of MBPP problems to use for training (default: 60)")
+    parser.add_argument("--test_size", type=int, default=150, help="Number of MBPP problems to use for evaluation (default: 150, enough for ~7 pp effect)")
+    parser.add_argument("--dataset_split", type=str, default="train+validation+test", help="HF split string for MBPP (e.g., 'train', 'validation', 'train+validation+test')")
     args = parser.parse_args()
 
     # initialize wandb
-    wandb.init(project="srrl_vs_grpo", name=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}", config={"method": args.method, "group_size_grpo": GROUP_SIZE_GRPO, "group_size_srrl": GROUP_SIZE_SRRL})
+    wandb.init(project="srrl_vs_grpo", name=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}", config={"method": args.method, "group_size_grpo": GROUP_SIZE_GRPO, "group_size_srrl": GROUP_SIZE_SRRL, "train_size": args.train_size, "test_size": args.test_size, "dataset_split": args.dataset_split})
 
     print("🎯 STABLE GRPO vs SRRL EXPERIMENT")
     print("=" * 50)
     
     from mbpp_utils import load_mbpp_dataset
-    dataset = load_mbpp_dataset()
+    dataset = load_mbpp_dataset(split=args.dataset_split)
     
-    train_problems = dataset[:30]
-    test_problems = dataset[30:60]
+    total_needed = args.train_size + args.test_size
+    if total_needed > len(dataset):
+        raise ValueError(f"Dataset too small: need {total_needed} but only {len(dataset)} problems available")
+
+    train_problems = dataset[: args.train_size]
+    test_problems = dataset[args.train_size : args.train_size + args.test_size]
     
     print(f"Training: {len(train_problems)} problems")
     print(f"Testing: {len(test_problems)} problems")
@@ -697,12 +799,39 @@ def main():
         print(f"  GRPO: {grpo_acc:.1%}")
         print(f"  SRRL: {srrl_acc:.1%}")
         print(f"  Winner: {results['comparison']['winner']}")
+
+        # ------------ Statistical confidence analysis ------------
+        p_val, b, c = mcnemar_test(results['grpo']['detailed_results'], results['srrl']['detailed_results'])
+        grpo_ci_low, grpo_ci_high = wilson_confidence_interval(results['grpo']['correct_problems'], len(test_problems))
+        srrl_ci_low, srrl_ci_high = wilson_confidence_interval(results['srrl']['correct_problems'], len(test_problems))
+        results['comparison'].update({
+            'mcnemar_p': p_val,
+            'discordant_srrl_only': b,
+            'discordant_grpo_only': c,
+            'grpo_ci': [grpo_ci_low, grpo_ci_high],
+            'srrl_ci': [srrl_ci_low, srrl_ci_high],
+            'recommended_sample_size': required_sample_size(grpo_acc, srrl_acc)
+        })
+        print(f"  95% CI GRPO: {grpo_ci_low:.1%} - {grpo_ci_high:.1%}")
+        print(f"  95% CI SRRL: {srrl_ci_low:.1%} - {srrl_ci_high:.1%}")
+        print(f"  McNemar p-value: {p_val:.4f}  (SRRL wins only: {b}, GRPO wins only: {c})")
+        print(f"  Estimated required #problems for 80% power if effect holds: {results['comparison']['recommended_sample_size']}")
+        wandb.log({
+            'stats/mcnemar_p': p_val,
+            'stats/grpo_ci_low': grpo_ci_low,
+            'stats/grpo_ci_high': grpo_ci_high,
+            'stats/srrl_ci_low': srrl_ci_low,
+            'stats/srrl_ci_high': srrl_ci_high
+        })
     
     with open("experiment_results.json", "w") as f:
         json.dump(results, f, indent=2)
     
     print(f"\n✅ STABLE EXPERIMENT COMPLETE!")
     print("📋 Real results with CUDA fixes!")
+    
+    # Flush all W&B tables before finishing the run
+    flush_logged_tables()
     wandb.finish()
 
 if __name__ == "__main__":
